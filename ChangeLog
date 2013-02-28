@@ -1,5 +1,6 @@
 UNRELEASED
   * fping.spec: fix setuid permissions and provides fping6 (Marcus Vinicius Ferreira)
+  * Allow running as non-root on Mac OS X by using non-privileged ICMP (#7)
 
 2012-09-04  David Schweikert  <david@schweikert.ch>
   * Version 3.4

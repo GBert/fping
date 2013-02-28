@@ -53,8 +53,13 @@ int open_ping_socket_ipv6()
 
     /* create raw socket for ICMP calls (ping) */
     s = socket( AF_INET6, SOCK_RAW, proto->p_proto );
-    if( s < 0 )
-        errno_crash_and_burn( "can't create raw socket (must run as root?)" );
+    if( s < 0 ) {
+        /* try non-privileged icmp (works on Mac OSX without privileges, for example) */
+        s = socket( AF_INET6, SOCK_DGRAM, proto->p_proto );
+        if( s < 0 ) {
+            errno_crash_and_burn( "can't create raw socket (must run as root?)" );
+        }
+    }
 
     /*
      * let the kernel pass extension headers of incoming packets,
