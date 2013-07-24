@@ -3,7 +3,6 @@ UNRELEASED
   * Minimum ping data size is now 0
   * Removed setsockopt IPV6_CHECKSUM, which shouldn't be set and breaks
     compiling on Solaris (reported by Juergen Arndt)
-  * fping.spec: fix setuid permissions and provides fping6 (Marcus Vinicius Ferreira)
   * Allow running as non-root on Mac OS X by using non-privileged ICMP (#7)
 
 2013-05-22  David Schweikert  <david@schweikert.ch>
