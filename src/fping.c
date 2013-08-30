@@ -112,6 +112,7 @@ extern int h_errno;
 /*** Constants ***/
 
 #define EMAIL       "david@schweikert.ch"
+#define EMAIL_MOD   "info@gerhard-bertelsmann.de"
 
 /*** Ping packet defines ***/
 
@@ -602,7 +603,7 @@ int main( int argc, char **argv )
 
         case 'v':
             printf( "%s: Version %s\n", argv[0], VERSION);
-            printf( "%s: comments to %s\n", argv[0], EMAIL );
+            printf( "%s: comments to %s, mod by %s\n", argv[0], EMAIL, EMAIL_MOD );
             exit( 0 );
 
         case 'f': 
