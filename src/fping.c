@@ -130,7 +130,7 @@ extern int h_errno;
 
 /* maxima and minima */
 #define MAX_COUNT               10000
-#define MIN_INTERVAL            10      /* in millisec */
+#define MIN_INTERVAL            1       /* in millisec */
 #define MIN_PERHOST_INTERVAL    20      /* in millisec */
 #define MIN_TIMEOUT             50      /* in millisec */
 #define MAX_RETRY               20
@@ -236,6 +236,7 @@ typedef struct host_entry
      int                  min_reply_i;        /* shortest response time */
      int                  total_time_i;       /* sum of response times */
      int                  *resp_times;        /* individual response times */
+     int                  tos;
 #if defined( DEBUG ) || defined( _DEBUG )
      int                  *sent_times;        /* per-sent-ping timestamp */
 #endif /* DEBUG || _DEBUG */
@@ -301,6 +302,7 @@ struct timezone tz;
 
 /* switches */
 int generate_flag = 0;              /* flag for IP list generation */
+int generate_flag_extended = 0;     /* flag for IP list generation - extendend */
 int verbose_flag, quiet_flag, stats_flag, unreachable_flag, alive_flag;
 int elapsed_flag, version_flag, count_flag, loop_flag;
 int per_recv_flag, report_all_rtts_flag, name_flag, addr_flag, backoff_flag;
@@ -475,7 +477,7 @@ int main( int argc, char **argv )
 
     /* get command line options */
 
-    while( ( c = getopt( argc, argv, "gedhlmnqusaAvDz:t:H:i:p:f:r:c:b:C:Q:B:S:I:T:O:" ) ) != EOF )
+    while( ( c = getopt( argc, argv, "GgedhlmnqusaAvDz:t:H:i:p:f:r:c:b:C:Q:B:S:I:T:O:" ) ) != EOF )
     {
         switch( c )
         {
@@ -607,6 +609,7 @@ int main( int argc, char **argv )
 #ifdef ENABLE_F_OPTION
             filename = optarg;
             generate_flag = 0;
+            generate_flag_extended = 0;
             break;
 #else
             if( getuid() )
@@ -620,6 +623,7 @@ int main( int argc, char **argv )
             {
                 filename = optarg;
                 generate_flag = 0;
+                generate_flag_extended = 0;
 
             }/* ELSE */
 
@@ -630,6 +634,12 @@ int main( int argc, char **argv )
             /* use IP list generation */
             /* mutually exclusive with using file input or command line targets */
             generate_flag = 1;
+            break;
+
+        case 'G':
+            /* use IP list generation */
+            /* mutually exclusive with using file input or command line targets */
+            generate_flag_extended = 1;
             break;
 
         case 'S':
@@ -697,7 +707,7 @@ int main( int argc, char **argv )
             retry > MAX_RETRY || 
             timeout < MIN_TIMEOUT * 100 ) 
         && getuid() )
-    {
+        {
         fprintf( stderr, "%s: these options are too risky for mere mortals.\n", prog );
         fprintf( stderr, "%s: You need i >= %u, p >= %u, r < %u, and t >= %u\n",
             prog, MIN_INTERVAL, MIN_PERHOST_INTERVAL, MAX_RETRY, MIN_TIMEOUT );
@@ -832,10 +842,10 @@ int main( int argc, char **argv )
         usage(1);
 
     /* if no conditions are specified, then assume input from stdin */
-    if( !*argv && !filename && !generate_flag )
+    if( !*argv && !filename && !generate_flag && !generate_flag_extended)
         filename = "-";
     
-    if( *argv && !generate_flag )
+    if( *argv && !generate_flag && !generate_flag_extended)
     {
         while( *argv )
         {
@@ -884,6 +894,15 @@ int main( int argc, char **argv )
 	    usage(1);
 	}
     }
+
+    else if( *argv && generate_flag_extended ) {
+        while( *argv ) {
+            /* printf("add net %s to ping\n",*argv); */
+            add_cidr( *argv );
+            ++argv;
+        }/* WHILE */
+    }
+
     else {
         usage(1);
     }
@@ -987,10 +1006,6 @@ void add_cidr(char *addr)
     *addr_end = '\0';
     mask_str = addr_end + 1;
     mask = atoi(mask_str);
-    if(mask < 1 || mask > 30) {
-        fprintf(stderr, "Error: netmask must be between 1 and 30 (is: %s)\n", mask_str);
-        exit(2);
-    }
 
     /* parse address (IPv4 only) */
     memset(&addr_hints, 0, sizeof(struct addrinfo));
@@ -1002,9 +1017,20 @@ void add_cidr(char *addr)
         exit(2);
     }
     if(addr_res->ai_family != AF_INET) {
-        fprintf(stderr, "Error: -g works only with IPv4 addresses\n");
+        fprintf(stderr, "Error: -g/-G works only with IPv4 addresses\n");
         exit(2);
     }
+
+
+    if(mask == 32) {
+        add_name(addr);
+        goto ADD_CIDR_END;
+    }
+    else if(mask < 1 || mask > 30) {
+        fprintf(stderr, "Error: netmask must be between 1 and 30 (is: %s)\n", mask_str);
+        exit(2);
+    }
+
     net_addr = ntohl(((struct sockaddr_in *) addr_res->ai_addr)->sin_addr.s_addr);
 
     /* convert mask integer from 1 to 32 to a bitmask */
@@ -1022,6 +1048,7 @@ void add_cidr(char *addr)
         inet_ntop(AF_INET, &in_addr_tmp, buffer, sizeof(buffer));
         add_name(buffer);
     }
+ADD_CIDR_END:
 
     freeaddrinfo(addr_res);
 }
@@ -1732,6 +1759,7 @@ int wait_for_reply(long wait_time)
     sum_replies += this_reply;
     h->total_time += this_reply;
     h->total_time_i += this_reply;
+    h->tos = ip->ip_tos;
     total_replies++;
     
     /* note reply time in array, probably */
@@ -1782,7 +1810,7 @@ int wait_for_reply(long wait_time)
             printf( "%s", h->host );
 
             if( verbose_flag )
-                printf( " is alive" );
+                printf( " is alive (TOS %d)", h->tos );
 
             if( elapsed_flag )
                 printf( " (%s ms)", sprint_tm( this_reply ) );
@@ -1813,6 +1841,7 @@ int wait_for_reply(long wait_time)
         printf( "%s%s : [%d], %d bytes, %s ms",
             h->host, h->pad, this_count, result, sprint_tm( this_reply ) );
         printf( " (%s avg, ", sprint_tm( avg ) );
+        printf( "TOS %d, ", h->tos );
     
         if( h->num_recv <= h->num_sent )
         {
@@ -2805,6 +2834,8 @@ void usage(int is_error)
     fprintf(out, "   -g         generate target list (only if no -f specified)\n" );
     fprintf(out, "                (specify the start and end IP in the target list, or supply a IP netmask)\n" );
     fprintf(out, "                (ex. %s -g 192.168.1.0 192.168.1.255 or %s -g 192.168.1.0/24)\n", prog, prog );
+    fprintf(out, "   -G         generate target list - extended (only if no -f specified)\n" );
+    fprintf(out, "                (supply networks ex. %s -G 192.168.1.0/24 192.168.111.0/24)\n", prog );
     fprintf(out, "   -H n       Set the IP TTL value (Time To Live hops)\n");
     fprintf(out, "   -i n       interval between sending ping packets (in millisec) (default %d)\n", interval / 100 );
     fprintf(out, "   -l         loop sending pings forever\n" );
