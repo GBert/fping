@@ -296,6 +296,7 @@ struct timezone tz;
 
 /* switches */
 int generate_flag = 0;              /* flag for IP list generation */
+int generate_flag_extended = 0;     /* flag for IP list generation - extendend */
 int tos_flag = 0;                   /* flag if tos should be printed */
 int verbose_flag, quiet_flag, stats_flag, unreachable_flag, alive_flag;
 int elapsed_flag, version_flag, count_flag, loop_flag;
@@ -383,7 +384,7 @@ int main( int argc, char **argv )
 
     /* get command line options */
 
-    while( ( c = getopt( argc, argv, "gedhlmnqusaAvDz:t:H:i:p:f:r:c:b:C:Q:B:S:I:T:O:" ) ) != EOF )
+    while( ( c = getopt( argc, argv, "GgedhlmnqusaAvDz:t:H:i:p:f:r:c:b:C:Q:B:S:I:T:O:" ) ) != EOF )
     {
         switch( c )
         {
@@ -512,12 +513,20 @@ int main( int argc, char **argv )
 
         case 'f': 
             filename = optarg;
+            generate_flag = 0;
+            generate_flag_extended = 0;
             break;
 
         case 'g':
             /* use IP list generation */
             /* mutually exclusive with using file input or command line targets */
             generate_flag = 1;
+            break;
+
+        case 'G':
+            /* use IP list generation */
+            /* mutually exclusive with using file input or command line targets */
+            generate_flag_extended = 1;
             break;
 
         case 'S':
@@ -720,14 +729,14 @@ int main( int argc, char **argv )
     /* file and generate are mutually exclusive */
     /* file and command line are mutually exclusive */
     /* generate requires command line parameters beyond the switches */
-    if( ( *argv && filename ) || ( filename && generate_flag ) || ( generate_flag && !*argv ) )
+    if( ( *argv && filename ) || ( filename && generate_flag ) || ( generate_flag && !*argv ) || ( generate_flag_extended && !*argv ) )
         usage(1);
 
     /* if no conditions are specified, then assume input from stdin */
-    if( !*argv && !filename && !generate_flag )
+    if( !*argv && !filename && !generate_flag && !generate_flag_extended)
         filename = "-";
     
-    if( *argv && !generate_flag )
+    if( *argv && !generate_flag && !generate_flag_extended)
     {
         while( *argv )
         {
@@ -775,6 +784,13 @@ int main( int argc, char **argv )
 	else {
 	    usage(1);
 	}
+    }
+    else if( *argv && generate_flag_extended ) {
+        while( *argv ) {
+            /* printf("add net %s to ping\n",*argv); */
+            add_cidr( *argv );
+            ++argv;
+        }/* WHILE */
     }
     else {
         usage(1);
@@ -2659,6 +2675,8 @@ void usage(int is_error)
     fprintf(out, "   -g         generate target list (only if no -f specified)\n" );
     fprintf(out, "                (specify the start and end IP in the target list, or supply a IP netmask)\n" );
     fprintf(out, "                (ex. %s -g 192.168.1.0 192.168.1.255 or %s -g 192.168.1.0/24)\n", prog, prog );
+    fprintf(out, "   -G         generate target list - extended (only if no -f specified)\n" );
+    fprintf(out, "                (supply multiple networks ex. %s -G 192.168.1.0/24 192.168.111.0/24)\n", prog );
     fprintf(out, "   -H n       Set the IP TTL value (Time To Live hops)\n");
     fprintf(out, "   -i n       interval between sending ping packets (in millisec) (default %d)\n", interval / 100 );
 #ifdef SO_BINDTODEVICE
