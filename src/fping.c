@@ -35,6 +35,9 @@ extern "C"
 {
 #endif /* __cplusplus */
 
+#include "fping.h"
+#include "options.h"
+
 /* if compiling for Windows, use this separate set
   (too difficult to ifdef all the autoconf defines) */
 #ifdef WIN32
@@ -53,9 +56,6 @@ extern "C"
 #include <signal.h>
 #include <getopt.h>
 #include <stdarg.h>
-
-#define __APPLE_USE_RFC_3542 1
-#include <netinet/in.h>
 
 #include "config.h"
 #include "seqmap.h"
@@ -97,8 +97,6 @@ extern "C"
 
 #endif /* WIN32 */
 
-#include "options.h"
-
 /*** externals ***/
 
 extern char *optarg;
@@ -112,7 +110,6 @@ extern int h_errno;
 /*** Constants ***/
 
 #define EMAIL       "david@schweikert.ch"
-#define EMAIL_MOD   "info@gerhard-bertelsmann.de"
 
 /*** Ping packet defines ***/
 
@@ -131,7 +128,7 @@ extern int h_errno;
 
 /* maxima and minima */
 #define MAX_COUNT               10000
-#define MIN_INTERVAL            1       /* in millisec */
+#define MIN_INTERVAL            10      /* in millisec */
 #define MIN_PERHOST_INTERVAL    20      /* in millisec */
 #define MIN_TIMEOUT             50      /* in millisec */
 #define MAX_RETRY               20
@@ -139,6 +136,7 @@ extern int h_errno;
 /* response time array flags */
 #define RESP_WAITING    -1
 #define RESP_UNUSED     -2
+#define RESP_ERROR      -3
 
 /* debugging flags */
 #if defined( DEBUG ) || defined( _DEBUG )
@@ -195,13 +193,6 @@ char *icmp_unreach_str[16] =
 };
 
 #define ICMP_UNREACH_MAXTYPE    15
-#ifndef IPV6
-#define FPING_SOCKADDR struct sockaddr_in
-#define FPING_ICMPHDR   struct icmp
-#else
-#define FPING_SOCKADDR struct sockaddr_in6
-#define FPING_ICMPHDR   struct icmp6_hdr
-#endif
 
 /* entry used to keep track of each host we are pinging */
 
@@ -227,17 +218,18 @@ typedef struct host_entry
      unsigned char        waiting;            /* waiting for response */
      struct timeval       last_send_time;     /* time of last packet sent */
      int                  num_sent;           /* number of ping packets sent */
-     int                  num_recv;           /* number of pings received */
+     int                  num_recv;           /* number of pings received (duplicates ignored) */
+     int                  num_recv_total;     /* number of pings received, including duplicates */
      int                  max_reply;          /* longest response time */
      int                  min_reply;          /* shortest response time */
      int                  total_time;         /* sum of response times */
+     /* _i -> splits (reset on every report interval) */
      int                  num_sent_i;         /* number of ping packets sent */
      int                  num_recv_i;         /* number of pings received */
      int                  max_reply_i;        /* longest response time */
      int                  min_reply_i;        /* shortest response time */
      int                  total_time_i;       /* sum of response times */
      int                  *resp_times;        /* individual response times */
-     int                  tos;
 #if defined( DEBUG ) || defined( _DEBUG )
      int                  *sent_times;        /* per-sent-ping timestamp */
 #endif /* DEBUG || _DEBUG */
@@ -280,7 +272,7 @@ struct in6_addr src_addr;
 
 /* global stats */
 long max_reply = 0;
-long min_reply = 1000000;
+long min_reply = 0;
 int total_replies = 0;
 double sum_replies = 0;
 int max_hostname_len = 0;
@@ -303,7 +295,6 @@ struct timezone tz;
 
 /* switches */
 int generate_flag = 0;              /* flag for IP list generation */
-int generate_flag_extended = 0;     /* flag for IP list generation - extendend */
 int verbose_flag, quiet_flag, stats_flag, unreachable_flag, alive_flag;
 int elapsed_flag, version_flag, count_flag, loop_flag;
 int per_recv_flag, report_all_rtts_flag, name_flag, addr_flag, backoff_flag;
@@ -370,115 +361,27 @@ void print_warning(char *fmt, ...);
 int main( int argc, char **argv )
 {
     int c, i, n;
-#ifdef IPV6
-    int opton = 1;
-#endif
-    struct protoent *proto;
     char *buf;
     uid_t uid;
-        int tos = 0; 
-
-#ifndef IPV6
-    struct sockaddr_in sa;
-#else
-    struct sockaddr_in6 sa;
-#endif
+    int tos = 0; 
     HOST_ENTRY *cursor;
 
+    s = open_ping_socket();
+
+    if((uid = getuid())) {
+        /* drop privileges */
+        setuid( getuid() );
+    }
+
     prog = argv[0];
-
-    /* confirm that ICMP is available on this machine */
-#ifndef IPV6
-    if( ( proto = getprotobyname( "icmp" ) ) == NULL ) 
-#else
-    if( ( proto = getprotobyname( "ipv6-icmp" ) ) == NULL ) 
-#endif
-        crash_and_burn( "icmp: unknown protocol" );
-
-    /* create raw socket for ICMP calls (ping) */
-#ifndef IPV6
-    s = socket( AF_INET, SOCK_RAW, proto->p_proto );
-#else
-    s = socket( AF_INET6, SOCK_RAW, proto->p_proto );
-#endif
-
-    if( s < 0 )
-        errno_crash_and_burn( "can't create raw socket (must run as root?)" );
-
-#ifdef IPV6
-    /*
-     * let the kernel pass extension headers of incoming packets,
-     * for privileged socket options
-     */
-#ifdef IPV6_RECVHOPOPTS
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_RECVHOPOPTS, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_RECVHOPOPTS)");
-#else  /* old adv. API */
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_HOPOPTS, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_HOPOPTS)");
-#endif
-#ifdef IPV6_RECVDSTOPTS
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_RECVDSTOPTS, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_RECVDSTOPTS)");
-#else  /* old adv. API */
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_DSTOPTS, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_DSTOPTS)");
-#endif
-#ifdef IPV6_RECVRTHDRDSTOPTS
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_RECVRTHDRDSTOPTS, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_RECVRTHDRDSTOPTS)");
-#endif
-#ifdef IPV6_RECVRTHDR
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_RECVRTHDR, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_RECVRTHDR)");
-#else  /* old adv. API */
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_RTHDR, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_RTHDR)");
-#endif
-#ifndef USE_SIN6_SCOPE_ID
-#ifdef IPV6_RECVPKTINFO
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_RECVPKTINFO, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_RECVPKTINFO)");
-#else  /* old adv. API */
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_PKTINFO, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_PKTINFO)");
-#endif
-#endif /* USE_SIN6_SCOPE_ID */
-#ifdef IPV6_RECVHOPLIMIT
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_RECVHOPLIMIT)");
-#else  /* old adv. API */
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_HOPLIMIT, &opton,
-            sizeof(opton)))
-            err(1, "setsockopt(IPV6_HOPLIMIT)");
-#endif
-#endif
-
-    if( ( uid = getuid() ) )
-    {
-        seteuid( getuid() );
-
-    }/* IF */
-
     ident = getpid() & 0xFFFF;
-
     verbose_flag = 1;
     backoff_flag = 1;
     opterr = 1;
 
     /* get command line options */
 
-    while( ( c = getopt( argc, argv, "GgedhlmnqusaAvDz:t:H:i:p:f:r:c:b:C:Q:B:S:I:T:O:" ) ) != EOF )
+    while( ( c = getopt( argc, argv, "gedhlmnqusaAvDz:t:H:i:p:f:r:c:b:C:Q:B:S:I:T:O:" ) ) != EOF )
     {
         switch( c )
         {
@@ -489,7 +392,8 @@ int main( int argc, char **argv )
             break;
         
         case 'r':
-            retry = ( unsigned int )atoi( optarg );
+            if (!sscanf(optarg,"%i",&retry))
+                usage(1);
             break;
         
         case 'i':
@@ -520,9 +424,7 @@ int main( int argc, char **argv )
             break;
 
         case 'b':
-            errno = 0;
-            ping_data_size = (unsigned int) strtol(optarg, (char **)NULL, 10);
-            if( errno )
+            if (!sscanf(optarg,"%i",&ping_data_size))
                 usage(1);
             
             break;
@@ -603,44 +505,17 @@ int main( int argc, char **argv )
 
         case 'v':
             printf( "%s: Version %s\n", argv[0], VERSION);
-            printf( "%s: comments to %s, mod by %s\n", argv[0], EMAIL, EMAIL_MOD );
+            printf( "%s: comments to %s\n", argv[0], EMAIL );
             exit( 0 );
 
         case 'f': 
-#ifdef ENABLE_F_OPTION
             filename = optarg;
-            generate_flag = 0;
-            generate_flag_extended = 0;
             break;
-#else
-            if( getuid() )
-            {
-                printf( "%s: this option can only be used by root.\n", argv[0] );
-                printf( "%s: fping will read from stdin by default.\n", argv[0] );
-                exit( 3 );
-
-            }/* IF */
-            else
-            {
-                filename = optarg;
-                generate_flag = 0;
-                generate_flag_extended = 0;
-
-            }/* ELSE */
-
-            break;
-#endif /* ENABLE_F_OPTION */
 
         case 'g':
             /* use IP list generation */
             /* mutually exclusive with using file input or command line targets */
             generate_flag = 1;
-            break;
-
-        case 'G':
-            /* use IP list generation */
-            /* mutually exclusive with using file input or command line targets */
-            generate_flag_extended = 1;
             break;
 
         case 'S':
@@ -674,9 +549,13 @@ int main( int argc, char **argv )
                     perror("setting type of service octet IP_TOS");
                 }
             }
+            else {
+                usage(1);
+            }
             break;
         default:
-            usage(1);
+            fprintf(stderr, "see 'fping -h' for usage information\n");
+            exit(1);
             break;
 
         }/* SWITCH */
@@ -685,21 +564,21 @@ int main( int argc, char **argv )
     /* validate various option settings */
 
     if (ttl > 255) {
-        fprintf(stderr, "ping: ttl %u out of range\n", ttl);  
-        usage(1);
+        fprintf(stderr, "ttl %u out of range\n", ttl);  
+        exit(1);
     }  
 
     if( unreachable_flag && alive_flag )
     {
         fprintf( stderr, "%s: specify only one of a, u\n", argv[0] );
-        usage(1);
+        exit(1);
 
     }/* IF */
 
     if( count_flag && loop_flag )
     {
         fprintf( stderr, "%s: specify only one of c, l\n", argv[0] );
-        usage(1);
+        exit(1);
     
     }/* IF */
     
@@ -708,19 +587,18 @@ int main( int argc, char **argv )
             retry > MAX_RETRY || 
             timeout < MIN_TIMEOUT * 100 ) 
         && getuid() )
-        {
+    {
         fprintf( stderr, "%s: these options are too risky for mere mortals.\n", prog );
         fprintf( stderr, "%s: You need i >= %u, p >= %u, r < %u, and t >= %u\n",
             prog, MIN_INTERVAL, MIN_PERHOST_INTERVAL, MAX_RETRY, MIN_TIMEOUT );
-        usage(1);
-
+        exit(1);
     }/* IF */
     
     if( ( ping_data_size > MAX_PING_DATA ) || ( ping_data_size < MIN_PING_DATA ) )
     {
         fprintf( stderr, "%s: data size %u not valid, must be between %u and %u\n",
             prog, ping_data_size, (unsigned int) MIN_PING_DATA, (unsigned int) MAX_PING_DATA );
-        usage(1);
+        exit(1);
     
     }/* IF */
     
@@ -728,7 +606,7 @@ int main( int argc, char **argv )
     {
         fprintf( stderr, "%s: backoff factor %.1f not valid, must be between %.1f and %.1f\n",
             prog, backoff, MIN_BACKOFF_FACTOR, MAX_BACKOFF_FACTOR );
-        usage(1);
+        exit(1);
     
     }/* IF */
 
@@ -736,7 +614,7 @@ int main( int argc, char **argv )
     {
         fprintf( stderr, "%s: count %u not valid, must be less than %u\n",
             prog, count, MAX_COUNT );
-        usage(1);
+        exit(1);
     
     }/* IF */
     
@@ -843,10 +721,10 @@ int main( int argc, char **argv )
         usage(1);
 
     /* if no conditions are specified, then assume input from stdin */
-    if( !*argv && !filename && !generate_flag && !generate_flag_extended)
+    if( !*argv && !filename && !generate_flag )
         filename = "-";
     
-    if( *argv && !generate_flag && !generate_flag_extended)
+    if( *argv && !generate_flag )
     {
         while( *argv )
         {
@@ -895,36 +773,15 @@ int main( int argc, char **argv )
 	    usage(1);
 	}
     }
-
-    else if( *argv && generate_flag_extended ) {
-        while( *argv ) {
-            /* printf("add net %s to ping\n",*argv); */
-            add_cidr( *argv );
-            ++argv;
-        }/* WHILE */
-    }
-
     else {
         usage(1);
     }
     
     if( !num_hosts )
-        exit( 2 );
+        exit(1);
 
-    /* set the source address */
-
-    if( src_addr_present )
-    {
-        memset( &sa, 0, sizeof( sa ) );
-#ifndef IPV6
-        sa.sin_family = AF_INET;
-        sa.sin_addr = src_addr;
-#else
-        sa.sin6_family = AF_INET6;
-        sa.sin6_addr = src_addr;
-#endif
-        if ( bind( s, (struct sockaddr *)&sa, sizeof( sa ) ) < 0 )
-            errno_crash_and_burn( "cannot bind source address" );
+    if(src_addr_present) {
+        socket_set_src_addr(s, src_addr);
     }
 
     /* allocate array to hold outstanding ping requests */
@@ -1015,24 +872,19 @@ void add_cidr(char *addr)
     ret = getaddrinfo(addr, NULL, &addr_hints, &addr_res);
     if(ret) {
         fprintf(stderr, "Error: can't parse address %s: %s\n", addr, gai_strerror(ret));
-        exit(2);
+        exit(1);
     }
     if(addr_res->ai_family != AF_INET) {
-        fprintf(stderr, "Error: -g/-G works only with IPv4 addresses\n");
-        exit(2);
+        fprintf(stderr, "Error: -g works only with IPv4 addresses\n");
+        exit(1);
     }
-
-
-    if(mask == 32) {
-        add_name(addr);
-        goto ADD_CIDR_END;
-    }
-    else if(mask < 1 || mask > 30) {
-        fprintf(stderr, "Error: netmask must be between 1 and 30 (is: %s)\n", mask_str);
-        exit(2);
-    }
-
     net_addr = ntohl(((struct sockaddr_in *) addr_res->ai_addr)->sin_addr.s_addr);
+
+    /* check mask */
+    if(mask < 1 || mask > 30) {
+        fprintf(stderr, "Error: netmask must be between 1 and 30 (is: %s)\n", mask_str);
+        exit(1);
+    }
 
     /* convert mask integer from 1 to 32 to a bitmask */
     bitmask = ((unsigned long) 0xFFFFFFFF) << (32-mask);
@@ -1049,7 +901,6 @@ void add_cidr(char *addr)
         inet_ntop(AF_INET, &in_addr_tmp, buffer, sizeof(buffer));
         add_name(buffer);
     }
-ADD_CIDR_END:
 
     freeaddrinfo(addr_res);
 }
@@ -1069,11 +920,11 @@ void add_range(char *start, char *end)
     ret = getaddrinfo(start, NULL, &addr_hints, &addr_res);
     if(ret) {
         fprintf(stderr, "Error: can't parse address %s: %s\n", start, gai_strerror(ret));
-        exit(2);
+        exit(1);
     }
     if(addr_res->ai_family != AF_INET) {
         fprintf(stderr, "Error: -g works only with IPv4 addresses\n");
-        exit(2);
+        exit(1);
     }
     start_long = ntohl(((struct sockaddr_in *) addr_res->ai_addr)->sin_addr.s_addr);
 
@@ -1084,11 +935,11 @@ void add_range(char *start, char *end)
     ret = getaddrinfo(end, NULL, &addr_hints, &addr_res);
     if(ret) {
         fprintf(stderr, "Error: can't parse address %s: %s\n", end, gai_strerror(ret));
-        exit(2);
+        exit(1);
     }
     if(addr_res->ai_family != AF_INET) {
         fprintf(stderr, "Error: -g works only with IPv4 addresses\n");
-        exit(2);
+        exit(1);
     }
     end_long = ntohl(((struct sockaddr_in *) addr_res->ai_addr)->sin_addr.s_addr);
 
@@ -1127,7 +978,7 @@ void main_loop()
 
                 /* Send the ping */
 		/*printf("Sending ping after %d ms\n", lt/100); */
-                if(!send_ping(s, h)) goto wait_for_reply;
+                send_ping(s, h);
 
                 /* Check what needs to be done next */
                 if(!loop_flag && !count_flag) {
@@ -1546,7 +1397,8 @@ int send_ping( int s, HOST_ENTRY *h )
     char *buffer;
     FPING_ICMPHDR *icp;
     int n;
-        int myseq;
+    int myseq;
+    int ret = 1;
 
     buffer = ( char* )malloc( ( size_t )ping_pkt_size );
     if( !buffer )
@@ -1582,47 +1434,44 @@ int send_ping( int s, HOST_ENTRY *h )
     n = sendto( s, buffer, ping_pkt_size, 0,
         ( struct sockaddr* )&h->saddr, sizeof( FPING_SOCKADDR ) );
 
-    if( n < 0 || n != ping_pkt_size )
     if(
         (n < 0 || n != ping_pkt_size)
 #if defined( EHOSTDOWN )
         && errno != EHOSTDOWN
 #endif
     ) {
-        if( verbose_flag || unreachable_flag )
-        {
+        if( verbose_flag || unreachable_flag ) {
             printf( "%s", h->host );
             if( verbose_flag )
                 printf( " error while sending ping: %s\n", strerror( errno ) );
             
             printf( "\n" );
-
-        }/* IF */
+        }
         
-        h->num_sent++;
-        h->num_sent_i++;
-        num_pingsent++;
-        free( buffer );
-        return(1);
-    }
+        if( !loop_flag )
+            h->resp_times[h->num_sent] = RESP_ERROR;
 
-    /* mark this trial as outstanding */
-    if( !loop_flag )
-        h->resp_times[h->num_sent] = RESP_WAITING;
+        ret = 0;
+    }
+    else {
+        /* mark this trial as outstanding */
+        if( !loop_flag )
+            h->resp_times[h->num_sent] = RESP_WAITING;
 
 #if defined( DEBUG ) || defined( _DEBUG )
-    if( sent_times_flag )
-        h->sent_times[h->num_sent] = timeval_diff( &h->last_send_time, &start_time );
-#endif /* DEBUG || _DEBUG */
+        if( sent_times_flag )
+            h->sent_times[h->num_sent] = timeval_diff( &h->last_send_time, &start_time );
+#endif
+    }
 
     h->num_sent++;
     h->num_sent_i++;
     h->waiting++;
     num_pingsent++;
     last_send_time = h->last_send_time;
-    
     free( buffer );
-    return(1);
+
+    return(ret);
 }
 
 
@@ -1735,40 +1584,44 @@ int wait_for_reply(long wait_time)
 
     n = seqmap_value->host_nr;
     h = table[n];
-
-    /* received ping is cool, so process it */
-    h->waiting = 0;
-    h->timeout = timeout;
-    h->num_recv++;
-    h->num_recv_i++;
-
     sent_time  = &seqmap_value->ping_ts;
     this_count = seqmap_value->ping_count;
+    this_reply = timeval_diff( &current_time, sent_time );
+
+    if( loop_flag || h->resp_times[this_count] == RESP_WAITING )
+    {
+        /* only for non-duplicates: */
+        h->waiting = 0;
+        h->timeout = timeout;
+        h->num_recv++;
+        h->num_recv_i++;
+
+        if( !max_reply      || this_reply > max_reply ) max_reply = this_reply;
+        if( !min_reply      || this_reply < min_reply ) min_reply = this_reply;
+        if( !h->max_reply   || this_reply > h->max_reply ) h->max_reply = this_reply;
+        if( !h->min_reply   || this_reply < h->min_reply ) h->min_reply = this_reply;
+        if( !h->max_reply_i || this_reply > h->max_reply_i ) h->max_reply_i = this_reply;
+        if( !h->min_reply_i || this_reply < h->min_reply_i ) h->min_reply_i = this_reply;
+        sum_replies += this_reply;
+        h->total_time += this_reply;
+        h->total_time_i += this_reply;
+        total_replies++;
+    }
+
+    /* received ping is cool, so process it */
+    h->num_recv_total++;
 
 #if defined( DEBUG ) || defined( _DEBUG )
     if( trace_flag ) 
         printf( "received [%d] from %s\n", this_count, h->host );
 #endif /* DEBUG || _DEBUG */
 
-    this_reply = timeval_diff( &current_time, sent_time );
-    if( this_reply > max_reply ) max_reply = this_reply;
-    if( this_reply < min_reply ) min_reply = this_reply;
-    if( this_reply > h->max_reply ) h->max_reply = this_reply;
-    if( this_reply < h->min_reply ) h->min_reply = this_reply;
-    if( this_reply > h->max_reply_i ) h->max_reply_i = this_reply;
-    if( this_reply < h->min_reply_i ) h->min_reply_i = this_reply;
-    sum_replies += this_reply;
-    h->total_time += this_reply;
-    h->total_time_i += this_reply;
-    h->tos = ip->ip_tos;
-    total_replies++;
-    
     /* note reply time in array, probably */
     if( !loop_flag )
     {
         if( ( this_count >= 0 ) && ( this_count < trials ) )
         {
-            if( h->resp_times[this_count] != RESP_WAITING )
+            if( h->resp_times[this_count] >= 0 )
             {
                 if( !per_recv_flag )
                 {
@@ -1811,7 +1664,7 @@ int wait_for_reply(long wait_time)
             printf( "%s", h->host );
 
             if( verbose_flag )
-                printf( " is alive (TOS %d)", h->tos );
+                printf( " is alive" );
 
             if( elapsed_flag )
                 printf( " (%s ms)", sprint_tm( this_reply ) );
@@ -1842,7 +1695,6 @@ int wait_for_reply(long wait_time)
         printf( "%s%s : [%d], %d bytes, %s ms",
             h->host, h->pad, this_count, result, sprint_tm( this_reply ) );
         printf( " (%s avg, ", sprint_tm( avg ) );
-        printf( "TOS %d, ", h->tos );
     
         if( h->num_recv <= h->num_sent )
         {
@@ -1853,7 +1705,7 @@ int wait_for_reply(long wait_time)
         else
         {
             printf( "%d%% return)",
-                ( h->num_recv * 100 ) / h->num_sent );
+                ( h->num_recv_total * 100 ) / h->num_sent );
         
         }/* ELSE */
 #ifndef IPV6
@@ -2134,45 +1986,10 @@ void add_name( char *name )
     host_ent = gethostbyname( name ); 
     if( host_ent == NULL )
     { 
-        if( h_errno == TRY_AGAIN )
-        { 
-            u_sleep( DNS_TIMEOUT ); 
-            host_ent = gethostbyname( name );
-
-        }/* IF */
-
-        if( host_ent == NULL )
-        {
-#ifdef NIS_GROUPS
-
-            /* maybe it's the name of a NIS netgroup */
-            char *machine, *user_ignored, *domain_ignored;
-            setnetgrent( name );
-            if( getnetgrent( &machine, &user_ignored, &domain_ignored ) == 0 )
-            {
-                endnetgrent();
-                print_warning("%s address not found\n", name );
-                
-                num_noaddress++;
-                return;
-            
-            }/* IF */
-            else
-                add_name(machine);
-
-            while( getnetgrent( &machine, &user_ignored, &domain_ignored ) )
-                add_name(machine);
-      
-            endnetgrent();
-            return;
-#else
             print_warning("%s address not found\n", name );
-            
             num_noaddress++;
             return ; 
-#endif /* NIS_GROUPS */
-        }/* IF */
-    }/* IF */
+    }
 
     if(host_ent->h_addrtype != AF_INET) {
         print_warning("%s: IPv6 address returned by gethostbyname (options inet6 in resolv.conf?)\n", name );
@@ -2329,7 +2146,7 @@ void add_addr( char *name, char *host, FPING_SOCKADDR *ipaddr )
 #endif
     p->timeout = timeout;
     p->running = 1;
-    p->min_reply = 10000000;
+    p->min_reply = 0;
 
     if( strlen( p->host ) > max_hostname_len )
         max_hostname_len = strlen( p->host );
@@ -2835,27 +2652,25 @@ void usage(int is_error)
     fprintf(out, "   -g         generate target list (only if no -f specified)\n" );
     fprintf(out, "                (specify the start and end IP in the target list, or supply a IP netmask)\n" );
     fprintf(out, "                (ex. %s -g 192.168.1.0 192.168.1.255 or %s -g 192.168.1.0/24)\n", prog, prog );
-    fprintf(out, "   -G         generate target list - extended (only if no -f specified)\n" );
-    fprintf(out, "                (supply networks ex. %s -G 192.168.1.0/24 192.168.111.0/24)\n", prog );
     fprintf(out, "   -H n       Set the IP TTL value (Time To Live hops)\n");
     fprintf(out, "   -i n       interval between sending ping packets (in millisec) (default %d)\n", interval / 100 );
+#ifdef SO_BINDTODEVICE
+        fprintf(out, "   -I if      bind to a particular interface\n");
+#endif
     fprintf(out, "   -l         loop sending pings forever\n" );
     fprintf(out, "   -m         ping multiple interfaces on target host\n" );
     fprintf(out, "   -n         show targets by name (-d is equivalent)\n" );
+    fprintf(out, "   -O n       set the type of service (tos) flag on the ICMP packets\n" );
     fprintf(out, "   -p n       interval between ping packets to one target (in millisec)\n" );
     fprintf(out, "                (in looping and counting modes, default %d)\n", perhost_interval / 100 );
     fprintf(out, "   -q         quiet (don't show per-target/per-ping results)\n" );
     fprintf(out, "   -Q n       same as -q, but show summary every n seconds\n" );
     fprintf(out, "   -r n       number of retries (default %d)\n", DEFAULT_RETRY );
     fprintf(out, "   -s         print final stats\n" );
-#ifdef SO_BINDTODEVICE
-        fprintf(out, "   -I if      bind to a particular interface\n");
-#endif
     fprintf(out, "   -S addr    set source address\n" );
     fprintf(out, "   -t n       individual target initial timeout (in millisec) (default %d)\n", timeout / 100 );
     fprintf(out, "   -T n       ignored (for compatibility with fping 2.4)\n");
     fprintf(out, "   -u         show targets that are unreachable\n" );
-    fprintf(out, "   -O n       set the type of service (tos) flag on the ICMP packets\n" );
     fprintf(out, "   -v         show version\n" );
     fprintf(out, "   targets    list of targets to check (if no -f specified)\n" );
     fprintf(out, "\n");

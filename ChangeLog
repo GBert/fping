@@ -1,8 +1,42 @@
-UNRELEASED
+2014-05-03  David Schweikert  <david@schweikert.ch>
+  * Version 3.10
+  * Fix confusing error message with -g and IPv6 addresses (#58, reported by Axel Beckert)
+  * Allow option '-f' also for non-root (since setuid privileges are dropped)
+  * Do not retry twice DNS lookup on DNS lookup problem
+  * Remove support for NIS groups
+  * Better document -B backoff-factor and when it can be used (#33, Oleksiy Zagorskyi)
+  * More tests added
+
+2014-03-08  David Schweikert  <david@schweikert.ch>
+  * Version 3.9
+  * Fix random output on socket error (reported by Aleksandrs Saveljevs, #56)
+  * Support ppc64le architecture by including alpha libtool version
+    (reported by Amit Kumar Gupta and Aravinda B Thunug)
+  * Fix compilation problem on FreeBSD (#57)
+  * Initial test suite and continous intergration (with travis-ci.org / coveralls.io)
+  * Don't output usage information on error
+
+2013-11-08  David Schweikert  <david@schweikert.ch>
+  * Version 3.8
+  * Fix segmentation fault introduced in version 3.7 with loop mode (reported
+    by Vlad Glagolev, #55)
+
+2013-11-04  David Schweikert  <david@schweikert.ch>
+  * Version 3.7
+  * Allow running as non-root on Mac OS X by using non-privileged ICMP (#7)
+  * Remove unnecessary IPv6 socket options
+  * Fix again compatibility issue with FreeBSD (Shawn Chu)
+  * Fix fping hanging forever on permanent sendto failure (Shawn Chu)
+  * Fix duplicate echo reply packets causing early stop in count mode
+    (reported by Ramon Schwammberger, #53)
+
+2013-10-10  David Schweikert  <david@schweikert.ch>
+  * Version 3.6
   * Fix loop issue after 65536 pings (reported by Peter Folk and GBert, #12)
   * Minimum ping data size is now 0
   * Removed setsockopt IPV6_CHECKSUM, which shouldn't be set and breaks
     compiling on Solaris (reported by Juergen Arndt)
+  * Fix wrong min RTT value with -Q option (reported by Alexander Ivanov, #51)
 
 2013-05-22  David Schweikert  <david@schweikert.ch>
   * Version 3.5

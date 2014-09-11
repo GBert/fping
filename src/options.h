@@ -43,12 +43,9 @@
 #ifndef DEFAULT_BACKOFF_FACTOR
 #define DEFAULT_BACKOFF_FACTOR 1.5 /* exponential timeout factor */
 #endif
-#define MIN_BACKOFF_FACTOR     0.1 /* exponential timeout factor */
+#define MIN_BACKOFF_FACTOR     1.0 /* exponential timeout factor */
 #define MAX_BACKOFF_FACTOR     5.0 /* exponential timeout factor */
 
 #ifndef DNS_TIMEOUT
 #define DNS_TIMEOUT 1000         /* time in micro_sec for dns retry */
 #endif
-
-/*  NIS_GROUPS allows input name to be an NIS netgroup name */
-/* #define NIS_GROUPS=1 */
