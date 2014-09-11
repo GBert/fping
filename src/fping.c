@@ -230,6 +230,7 @@ typedef struct host_entry
      int                  min_reply_i;        /* shortest response time */
      int                  total_time_i;       /* sum of response times */
      int                  *resp_times;        /* individual response times */
+     int                  tos;                /* individual tos field */
 #if defined( DEBUG ) || defined( _DEBUG )
      int                  *sent_times;        /* per-sent-ping timestamp */
 #endif /* DEBUG || _DEBUG */
@@ -295,6 +296,7 @@ struct timezone tz;
 
 /* switches */
 int generate_flag = 0;              /* flag for IP list generation */
+int tos_flag = 0;                   /* flag if tos should be printed */
 int verbose_flag, quiet_flag, stats_flag, unreachable_flag, alive_flag;
 int elapsed_flag, version_flag, count_flag, loop_flag;
 int per_recv_flag, report_all_rtts_flag, name_flag, addr_flag, backoff_flag;
@@ -363,7 +365,7 @@ int main( int argc, char **argv )
     int c, i, n;
     char *buf;
     uid_t uid;
-    int tos = 0; 
+    int tos = 0;
     HOST_ENTRY *cursor;
 
     s = open_ping_socket();
@@ -548,6 +550,7 @@ int main( int argc, char **argv )
                 if ( setsockopt(s, IPPROTO_IP, IP_TOS, &tos, sizeof(tos))) {
                     perror("setting type of service octet IP_TOS");
                 }
+		tos_flag = 1;
             }
             else {
                 usage(1);
@@ -1605,6 +1608,7 @@ int wait_for_reply(long wait_time)
         sum_replies += this_reply;
         h->total_time += this_reply;
         h->total_time_i += this_reply;
+        h->tos = ip->ip_tos;
         total_replies++;
     }
 
@@ -1664,7 +1668,10 @@ int wait_for_reply(long wait_time)
             printf( "%s", h->host );
 
             if( verbose_flag )
-                printf( " is alive" );
+                if ( tos_flag )
+                    printf( " is alive (TOS %d)", h->tos );
+                else
+                    printf( " is alive" );
 
             if( elapsed_flag )
                 printf( " (%s ms)", sprint_tm( this_reply ) );
