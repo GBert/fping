@@ -128,7 +128,7 @@ extern int h_errno;
 
 /* maxima and minima */
 #define MAX_COUNT               10000
-#define MIN_INTERVAL            10      /* in millisec */
+#define MIN_INTERVAL            1       /* in millisec */
 #define MIN_PERHOST_INTERVAL    20      /* in millisec */
 #define MIN_TIMEOUT             50      /* in millisec */
 #define MAX_RETRY               20
